@@ -6,7 +6,7 @@ import (
 	"image"
 	"io/ioutil"
 	"log"
-	_ "math"
+	"math"
 	"os"
 	"regexp"
 	"sort"
