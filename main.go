@@ -4,12 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	"io/ioutil"
 	"log"
-	"math"
+	_ "math"
 	"os"
-	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/signintech/gopdf"
 )
@@ -21,27 +22,32 @@ func main() {
 	flag.StringVar(&outputPath, "o", "output.pdf", "Output path for pdf")
 	flag.Parse()
 
-	folders, files := scanRecursive(inputPath, []string{})
-	fmt.Println("Found " + strconv.Itoa(len(folders)) + " folders containing " + strconv.Itoa(len(files)) + " files.")
+	folders := getSortedFolders(inputPath)
 
 	pdf := gopdf.GoPdf{}
 	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
 
-	for _, file := range files {
-		pdf.AddPage()
+	for _, folder := range folders {
+		files := getSortedFiles(inputPath + "/" + folder)
+		for _, file := range files {
+			fullpath := inputPath + "/" + folder + "/" + file
+			fmt.Println(fullpath)
 
-		imageW, imageH := getImageDimension(file)
-		scale := math.Min(gopdf.PageSizeA4.W/float64(imageW), gopdf.PageSizeA4.H/float64(imageH))
-		var rect gopdf.Rect
-		rect.W = float64(imageW) * scale
-		rect.H = float64(imageH) * scale
+			pdf.AddPage()
 
-		centerW := (gopdf.PageSizeA4.W - rect.W) / 2
-		centerH := (gopdf.PageSizeA4.H - rect.H) / 2
+			imageW, imageH := getImageDimension(fullpath)
+			scale := math.Min(gopdf.PageSizeA4.W/float64(imageW), gopdf.PageSizeA4.H/float64(imageH))
+			var rect gopdf.Rect
+			rect.W = float64(imageW) * scale
+			rect.H = float64(imageH) * scale
 
-		err := pdf.Image(file, centerW, centerH, &rect)
-		if err != nil {
-			log.Panic(err)
+			centerW := (gopdf.PageSizeA4.W - rect.W) / 2
+			centerH := (gopdf.PageSizeA4.H - rect.H) / 2
+
+			err := pdf.Image(fullpath, centerW, centerH, &rect)
+			if err != nil {
+				log.Panic(err)
+			}
 		}
 	}
 
@@ -61,57 +67,68 @@ func getImageDimension(imagePath string) (int, int) {
 	return image.Width, image.Height
 }
 
-func scanRecursive(dirPath string, ignore []string) ([]string, []string) {
+type sortablePath struct {
+	original  string
+	numerical int
+}
 
-	folders := []string{}
-	files := []string{}
+func makeSortable(entries []os.FileInfo, onlyFolders bool) []sortablePath {
+	// Prepare buffer for the numerically named folders
+	var buf []sortablePath
 
-	// Scan
-	filepath.Walk(dirPath, func(path string, f os.FileInfo, err error) error {
-
-		_continue := false
-
-		// Loop : Ignore Files & Folders
-		for _, i := range ignore {
-
-			// If ignored path
-			if strings.Index(path, i) != -1 {
-
-				// Continue
-				_continue = true
-			}
-		}
-
-		if _continue == false {
-
-			f, err = os.Stat(path)
-
-			// If no error
+	for _, entry := range entries {
+		if (entry.IsDir() && onlyFolders) || (!entry.IsDir() && !onlyFolders) {
+			// Remove everything that isn't number, so "page420" reads as "420"
+			reg, err := regexp.Compile("[^0-9]+")
 			if err != nil {
-				log.Fatal(err)
+				fmt.Println("Skipping {}", entry.Name())
+				continue
 			}
 
-			// File & Folder Mode
-			fMode := f.Mode()
-
-			// Is folder
-			if fMode.IsDir() {
-
-				// Append to Folders Array
-				folders = append(folders, path)
-
-				// Is file
-			} else if fMode.IsRegular() {
-
-				// Append to Files Array
-				files = append(files, path)
+			onlyNumbers := reg.ReplaceAllString(entry.Name(), "")
+			numeric, err := strconv.Atoi(onlyNumbers)
+			if err != nil {
+				fmt.Println("Skipping {}", entry.Name())
+				continue
+			}
+			if len(onlyNumbers) > 0 {
+				buf = append(buf, sortablePath{entry.Name(), numeric})
 			}
 		}
+	}
+	return buf
+}
 
-		return nil
+func sortPaths(s []sortablePath) []string {
+	sort.SliceStable(s, func(i, j int) bool {
+		return s[i].numerical < s[j].numerical
 	})
+	var onlyPaths []string
+	for _, sp := range s {
+		onlyPaths = append(onlyPaths, sp.original)
+	}
+	return onlyPaths
+}
 
-	return folders, files
+func getSortedFolders(dirPath string) []string {
+	// Get all things in directory
+	entries, err := ioutil.ReadDir(dirPath)
+	if err != nil {
+		panic("could not open folder " + err.Error())
+	}
+
+	sortable := makeSortable(entries, true)
+	return sortPaths(sortable)
+}
+
+func getSortedFiles(folder string) []string {
+	entries, err := ioutil.ReadDir(folder)
+	if err != nil {
+		panic(err)
+	}
+
+	sortable := makeSortable(entries, false)
+	return sortPaths(sortable)
 }
 
 func printStrings(slice []string) {
